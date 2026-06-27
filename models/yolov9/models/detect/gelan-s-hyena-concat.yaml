@@ -1,0 +1,74 @@
+# YOLOv9 GELAN-S with Hyena-2D neck (HyenaNeckConcatPE).
+# Replaces S4ND's HiPPO-derived rank-1 outer product kernel with a Hyena-style
+# FFN-parameterized full-rank 2D kernel. Still LTI (no gating), still FFT-based,
+# still bidirectional. Compare against gelan-s-ssm-concat-s4nd-pe.yaml.
+
+# parameters
+nc: 80
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# anchors
+anchors: 3
+
+# gelan backbone (unchanged)
+backbone:
+  [
+   [-1, 1, Conv, [32, 3, 2]],
+   [-1, 1, Conv, [64, 3, 2]],
+   [-1, 1, ELAN1, [64, 64, 32]],
+   [-1, 1, AConv, [128]],
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],    # 4
+   [-1, 1, AConv, [192]],
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],    # 6
+   [-1, 1, AConv, [256]],
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],   # 8
+  ]
+
+head:
+  [
+   # SPPELAN (unchanged)
+   [-1, 1, SPPELAN, [256, 128]],                              # 9
+
+   # FPN top-down (unchanged)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 10
+   [[-1, 6], 1, Concat, [1]],                                # 11
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 12 FPN P4 (192ch, 40x40)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 13
+   [[-1, 4], 1, Concat, [1]],                                # 14
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],                 # 15 FPN P3 (128ch, 80x80)
+
+   # PAN bottom-up (unchanged)
+   [-1, 1, AConv, [96]],                                     # 16
+   [[-1, 12], 1, Concat, [1]],                               # 17
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 18 PAN P4 (192ch, 40x40)
+   [-1, 1, AConv, [128]],                                    # 19
+   [[-1, 9], 1, Concat, [1]],                                # 20
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],                # 21 PAN P5 (256ch, 20x20)
+
+   # Hyena-2D neck: FFN-parameterized full-rank 2D kernel + skip concat
+   # args: [c2, img_size, filter_order, bands, kernel_layers, bidirectional, w, use_pe, use_gate, bi_fusion, use_d_skip, learnable_pe, n_blocks, use_channel_mix_ffn, kernel_order, gate_order]
+   # kernel_layers: depth of FFN inside Hyena2DFilter that generates h(i,j) -- NOT stacked Hyena blocks
+   # n_blocks: number of stacked HyenaBlocks before the final fuse (default=1)
+   # use_channel_mix_ffn=False: no channel mixing FFN, base neck behavior (default)
+   # use_channel_mix_ffn=True: adds LayerNorm->Conv1x1(C->4C)->GELU->Conv1x1(4C->C) after residual
+   #                           same as S4ND output_linear / MambND feedforward / transformer FFN
+   #                           needed for backbone use, optional for neck
+   #           each block does prenorm->short_conv->fftconv->residual on the output of the previous block
+   #           fuse(cat[y, x_orig]) only happens once at the end regardless of n_blocks
+   # use_gate=False: LTI, clean comparison with S4ND (kernel rank is the only variable)
+   # use_gate=True + bidirectional=True: per-direction gating (4-way split, our contribution)
+   # use_gate=True + bidirectional=False: standard Hyena gating (3-way split, same as original)
+   # bi_fusion='add': fixed equal weighting of fwd+bwd (default, matches S4ND)
+   # bi_fusion='concat': learned per-channel mixing via 1x1 conv (more expressive)
+   # use_d_skip=False: no D term, base behavior (default)
+   # use_d_skip=True: learnable D*u skip inside fftconv, same as SSM y=Cx+Du (S4ND + Hyena both have this)
+   # learnable_pe=False: kernel PE grid z fixed buffer, base behavior (default)
+   # learnable_pe=True: z is nn.Parameter with lr=1e-5, barely drifts from sin/cos init (same trick as original Hyena)
+   [15, 1, HyenaNeckConcatPE, [128, 80, 16, 1, 1, True, 1, False, False, 'add', False, False, 1, False, 1, 2]],  # 22 P3 (128ch, 80x80)
+   [18, 1, HyenaNeckConcatPE, [192, 40, 16, 1, 1, True, 1, False, False, 'add', False, False, 1, False, 1, 2]],  # 23 P4 (192ch, 40x40)
+   [21, 1, HyenaNeckConcatPE, [256, 20, 16, 1, 1, True, 1, False, False, 'add', False, False, 1, False, 1, 2]],  # 24 P5 (256ch, 20x20)
+
+   # detect
+   [[22, 23, 24], 1, DDetect, [nc]],                         # 25
+  ]

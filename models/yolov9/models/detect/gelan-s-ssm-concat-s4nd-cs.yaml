@@ -1,0 +1,57 @@
+# YOLOv9 GELAN-S with S4NDNeckConcatCS (cross-scale semantic injection).
+# P3 and P4 SSMs receive P5 semantic context (global avg pool + projection)
+# before processing, giving them access to coarse object-level information.
+# P5 uses standard S4NDNeckConcat (already the semantic scale).
+# Ablation: compare against gelan-s-ssm-concat-s4nd.yaml (no cross-scale).
+
+# parameters
+nc: 80
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# anchors
+anchors: 3
+
+# gelan backbone (unchanged)
+backbone:
+  [
+   [-1, 1, Conv, [32, 3, 2]],
+   [-1, 1, Conv, [64, 3, 2]],
+   [-1, 1, ELAN1, [64, 64, 32]],
+   [-1, 1, AConv, [128]],
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],    # 4
+   [-1, 1, AConv, [192]],
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],    # 6
+   [-1, 1, AConv, [256]],
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],   # 8
+  ]
+
+head:
+  [
+   # SPPELAN (unchanged)
+   [-1, 1, SPPELAN, [256, 128]],                              # 9
+
+   # FPN top-down (unchanged)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 10
+   [[-1, 6], 1, Concat, [1]],                                # 11
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 12 FPN P4 (192ch, 40x40)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 13
+   [[-1, 4], 1, Concat, [1]],                                # 14
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],                 # 15 FPN P3 (128ch, 80x80)
+
+   # PAN bottom-up (unchanged)
+   [-1, 1, AConv, [96]],                                     # 16
+   [[-1, 12], 1, Concat, [1]],                               # 17
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 18 PAN P4 (192ch, 40x40)
+   [-1, 1, AConv, [128]],                                    # 19
+   [[-1, 9], 1, Concat, [1]],                                # 20
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],                # 21 PAN P5 (256ch, 20x20)
+
+   # S4ND with cross-scale semantic injection at P3 and P4 (ctx = P5, layer 21)
+   [[15, 21], 1, S4NDNeckConcatCS, [128, 80, 128, 64, 1]],  # 22 P3 + P5 context
+   [[18, 21], 1, S4NDNeckConcatCS, [192, 40, 128, 64, 1]],  # 23 P4 + P5 context
+   [21, 1, S4NDNeckConcat, [256, 20, 128, 64, 1]],           # 24 P5 (semantic scale, no injection)
+
+   # detect
+   [[22, 23, 24], 1, DDetect, [nc]],                         # 25
+  ]

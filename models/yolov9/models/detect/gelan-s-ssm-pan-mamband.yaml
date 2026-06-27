@@ -1,0 +1,53 @@
+# YOLOv9 GELAN-S with SSM-PAN: MambaNDNeck replaces RepNCSPELAN4 in the PAN bottom-up path.
+# FPN (top-down) and SPPELAN are unchanged. The PAN's bottom-up aggregation
+# (P3→P4→P5) is replaced by MambaNDNeck blocks, which learn global sequential
+# context at each scale rather than local conv feature extraction.
+
+# parameters
+nc: 80  # number of classes
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# anchors
+anchors: 3
+
+# gelan backbone (unchanged)
+backbone:
+  [
+   [-1, 1, Conv, [32, 3, 2]],           # 0-P1/2
+   [-1, 1, Conv, [64, 3, 2]],           # 1-P2/4
+   [-1, 1, ELAN1, [64, 64, 32]],        # 2
+   [-1, 1, AConv, [128]],               # 3-P3/8
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],   # 4
+   [-1, 1, AConv, [192]],               # 5-P4/16
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],   # 6
+   [-1, 1, AConv, [256]],               # 7-P5/32
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],  # 8
+  ]
+
+head:
+  [
+   # SPPELAN (unchanged)
+   [-1, 1, SPPELAN, [256, 128]],                               # 9
+
+   # FPN top-down (unchanged)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],                 # 10
+   [[-1, 6], 1, Concat, [1]],                                  # 11 cat backbone P4 (256+192=448ch)
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                   # 12 FPN P4 (192ch, 40x40)
+
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],                 # 13
+   [[-1, 4], 1, Concat, [1]],                                  # 14 cat backbone P3 (192+128=320ch)
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],                   # 15 FPN P3 (128ch, 80x80) — P3 detection
+
+   # SSM-PAN bottom-up: MambaNDNeck replaces RepNCSPELAN4
+   [-1, 1, AConv, [96]],                                       # 16 downsample P3 (96ch, 40x40)
+   [[-1, 12], 1, Concat, [1]],                                 # 17 cat FPN P4 (96+192=288ch, 40x40)
+   [-1, 1, MambaNDNeck, [192, 40, 128, 32, 1]],                # 18 SSM-PAN P4 (192ch, 40x40) — P4 detection
+
+   [-1, 1, AConv, [128]],                                      # 19 downsample SSM P4 (128ch, 20x20)
+   [[-1, 9], 1, Concat, [1]],                                  # 20 cat SPPELAN P5 (128+256=384ch, 20x20)
+   [-1, 1, MambaNDNeck, [256, 20, 128, 32, 1]],                # 21 SSM-PAN P5 (256ch, 20x20) — P5 detection
+
+   # detect
+   [[15, 18, 21], 1, DDetect, [nc]],                           # DDetect(P3, P4, P5)
+  ]

@@ -1,0 +1,61 @@
+# YOLOv9 GELAN-S with S4NDNeckConcatPE placed BEFORE FPN/PAN (pre-FPN placement).
+# Motivated by Non-local Networks (Wang et al. 2018) and ViTDet (He et al. 2022):
+# global context before feature aggregation is more powerful than post-hoc
+# refinement after aggregation. FPN/PAN now aggregates globally-informed
+# backbone features rather than raw backbone features.
+#
+# Compare against gelan-s-ssm-concat-s4nd-pe.yaml (same S4ND, post-FPN placement).
+
+# parameters
+nc: 80
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# anchors
+anchors: 3
+
+# gelan backbone (unchanged)
+backbone:
+  [
+   [-1, 1, Conv, [32, 3, 2]],
+   [-1, 1, Conv, [64, 3, 2]],
+   [-1, 1, ELAN1, [64, 64, 32]],
+   [-1, 1, AConv, [128]],
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],    # 4 P3 (128ch, 80x80)
+   [-1, 1, AConv, [192]],
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],    # 6 P4 (192ch, 40x40)
+   [-1, 1, AConv, [256]],
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],   # 8 P5 (256ch, 20x20)
+  ]
+
+head:
+  [
+   # SPPELAN on raw backbone P5 (unchanged)
+   [-1, 1, SPPELAN, [256, 128]],                              # 9 (256ch, 20x20)
+
+   # S4ND applied to backbone features BEFORE FPN/PAN.
+   # global context now informs the aggregation process itself,
+   # rather than refining already-aggregated features.
+   [4, 1, S4NDNeckConcatPE, [128, 80, 128, 64, 1]],          # 10 enhanced P3 (128ch, 80x80)
+   [6, 1, S4NDNeckConcatPE, [192, 40, 128, 64, 1]],          # 11 enhanced P4 (192ch, 40x40)
+   [9, 1, S4NDNeckConcatPE, [256, 20, 128, 64, 1]],          # 12 enhanced P5 (256ch, 20x20)
+
+   # FPN top-down (aggregating S4ND-enhanced backbone features)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 13
+   [[-1, 11], 1, Concat, [1]],                               # 14 (256+192=448ch)
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 15 FPN P4 (192ch, 40x40)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 16
+   [[-1, 10], 1, Concat, [1]],                               # 17 (192+128=320ch)
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],                 # 18 FPN P3 (128ch, 80x80)
+
+   # PAN bottom-up
+   [-1, 1, AConv, [96]],                                     # 19
+   [[-1, 15], 1, Concat, [1]],                               # 20 (96+192=288ch)
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 21 PAN P4 (192ch, 40x40)
+   [-1, 1, AConv, [128]],                                    # 22
+   [[-1, 12], 1, Concat, [1]],                               # 23 (128+256=384ch)
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],                # 24 PAN P5 (256ch, 20x20)
+
+   # detect on FPN/PAN outputs directly (no second S4ND pass)
+   [[18, 21, 24], 1, DDetect, [nc]],                         # 25
+  ]

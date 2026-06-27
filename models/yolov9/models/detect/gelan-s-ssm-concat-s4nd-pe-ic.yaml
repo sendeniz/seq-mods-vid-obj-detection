@@ -1,0 +1,57 @@
+# YOLOv9 GELAN-S with S4NDNeckConcatPEIC (positional embeddings + input-dependent C).
+# Same as gelan-s-ssm-concat-s4nd-pe.yaml but the SSM readout C adapts to the
+# input via a small MLP instead of being fixed. The MLP pools the feature map
+# spatially and produces a per-mode gate that scales each SSM mode up or down
+# depending on what the scene looks like globally.
+
+# parameters
+nc: 80
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# anchors
+anchors: 3
+
+# gelan backbone (unchanged)
+backbone:
+  [
+   [-1, 1, Conv, [32, 3, 2]],
+   [-1, 1, Conv, [64, 3, 2]],
+   [-1, 1, ELAN1, [64, 64, 32]],
+   [-1, 1, AConv, [128]],
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],    # 4
+   [-1, 1, AConv, [192]],
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],    # 6
+   [-1, 1, AConv, [256]],
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],   # 8
+  ]
+
+head:
+  [
+   # SPPELAN (unchanged)
+   [-1, 1, SPPELAN, [256, 128]],                              # 9
+
+   # FPN top-down (unchanged)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 10
+   [[-1, 6], 1, Concat, [1]],                                # 11
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 12 FPN P4 (192ch, 40x40)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 13
+   [[-1, 4], 1, Concat, [1]],                                # 14
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],                 # 15 FPN P3 (128ch, 80x80)
+
+   # PAN bottom-up (unchanged)
+   [-1, 1, AConv, [96]],                                     # 16
+   [[-1, 12], 1, Concat, [1]],                               # 17
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 18 PAN P4 (192ch, 40x40)
+   [-1, 1, AConv, [128]],                                    # 19
+   [[-1, 9], 1, Concat, [1]],                                # 20
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],                # 21 PAN P5 (256ch, 20x20)
+
+   # S4ND with positional embeddings + input-dependent C
+   [15, 1, S4NDNeckConcatPEIC, [128, 80, 128, 64, 1]],       # 22 P3 (128ch, 80x80)
+   [18, 1, S4NDNeckConcatPEIC, [192, 40, 128, 64, 1]],       # 23 P4 (192ch, 40x40)
+   [21, 1, S4NDNeckConcatPEIC, [256, 20, 128, 64, 1]],       # 24 P5 (256ch, 20x20)
+
+   # detect
+   [[22, 23, 24], 1, DDetect, [nc]],                         # 25
+  ]

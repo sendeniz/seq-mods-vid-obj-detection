@@ -1,0 +1,69 @@
+# YOLOv9 with HyenaND backbone -- comparable to Mamba-YOLO-T (~6M params).
+#
+# Replaces GELAN CNN backbone blocks with HyenaBlocks (natively 2D full-rank
+# implicit kernel) while keeping the GELAN-S neck (RepNCSPELAN4 FPN/PAN)
+# and DDetect head unchanged. Only the backbone changes -- clean comparison.
+#
+# Stage ratio 1/3/1 with GELAN-S channel dims (128/192/256) gives ~5.6M params,
+# matching Mamba-YOLO-T (5.8M, VSSBlock backbone, 1D scan).
+#
+# use_channel_mix_ffn=True: backbone needs channel mixing (no prior CNN to do it).
+#
+# HyenaBlock args: [img_size, filter_order, bands, kernel_layers, bidirectional,
+#                   w, use_pe, use_gate, bi_fusion, use_d_skip, learnable_pe,
+#                   use_channel_mix_ffn, kernel_order, gate_order]
+#                   kernel_order/gate_order default to 1/2 so omitting them preserves current behavior
+
+# parameters
+nc: 80
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# anchors
+anchors: 3
+
+backbone:
+  [
+   # stem: one strided conv to 320x320
+   [-1, 1, Conv, [32, 3, 2]],                                                               # 0 (320x320, 32ch)
+
+   # P2: 160x160, 64ch -- 1 HyenaBlock, matches Mamba-YOLO-T which also applies SSM at P2
+   [-1, 1, Conv, [64, 3, 2]],                                                               # 1 (160x160, 64ch)
+   [-1, 1, HyenaBlock, [160, 16, 1, 1, True, 1, False, True, 'concat', True, False, True, 1, 2]], # 2 P2 (64ch, 160x160)
+
+   # P3: 80x80, 128ch -- 1 HyenaBlock
+   [-1, 1, AConv, [128]],                                                                       # 3 (80x80, 128ch)
+   [-1, 1, HyenaBlock, [80, 16, 1, 1, True, 1, False, True, 'concat', True, False, True, 1, 2]],  # 4 P3 (128ch, 80x80)
+
+   # P4: 40x40, 192ch -- 2 HyenaBlocks
+   [-1, 1, AConv, [192]],                                                                       # 5 (40x40, 192ch)
+   [-1, 1, HyenaBlock, [40, 16, 1, 1, True, 1, False, True, 'concat', True, False, True, 1, 2]],  # 6 P4 (192ch, 40x40)
+   # P5: 20x20, 256ch -- 2 HyenaBlocks
+   [-1, 1, AConv, [256]],                                                                       # 7 (20x20, 256ch)
+   [-1, 1, HyenaBlock, [20, 16, 1, 1, True, 1, False, True, 'concat', True, False, True, 1, 2]],  # 8 P5 (256ch, 20x20)
+
+   # SPPELAN for multi-scale pooling at P5 -- same as GELAN-S
+   [-1, 1, SPPELAN, [256, 128]],                                                            # 9 (256ch, 20x20)
+  ]
+
+head:
+  [
+   # FPN top-down
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 10
+   [[-1, 6], 1, Concat, [1]],                                # 11  P5(256) + P4(192) = 448ch
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 12 FPN P4 (192ch, 40x40)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],               # 13
+   [[-1, 4], 1, Concat, [1]],                                # 14  P4(192) + P3(128) = 320ch
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],                 # 15 FPN P3 (128ch, 80x80)
+
+   # PAN bottom-up
+   [-1, 1, AConv, [96]],                                     # 16
+   [[-1, 12], 1, Concat, [1]],                               # 17  P3(96) + FPN-P4(192) = 288ch
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                 # 18 PAN P4 (192ch, 40x40)
+   [-1, 1, AConv, [128]],                                    # 19
+   [[-1, 9], 1, Concat, [1]],                                # 20  P4(128) + P5(256) = 384ch
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],                # 21 PAN P5 (256ch, 20x20)
+
+   # detect
+   [[15, 18, 21], 1, DDetect, [nc]],                         # 22
+  ]

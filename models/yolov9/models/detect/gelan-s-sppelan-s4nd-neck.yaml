@@ -1,0 +1,65 @@
+# YOLOv9 GELAN-S with SPPELAN + S4NDNeck at P5
+# SPPELAN handles multi-scale pooling context; S4NDNeck adds global sequential context on top.
+# Analogous to RT-DETR: multi-scale feature extraction followed by transformer/SSM encoder.
+
+# parameters
+nc: 80  # number of classes
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# anchors
+anchors: 3
+
+# gelan backbone (unchanged)
+backbone:
+  [
+   [-1, 1, Conv, [32, 3, 2]],           # 0-P1/2
+   [-1, 1, Conv, [64, 3, 2]],           # 1-P2/4
+   [-1, 1, ELAN1, [64, 64, 32]],        # 2
+   [-1, 1, AConv, [128]],               # 3-P3/8
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],   # 4
+   [-1, 1, AConv, [192]],               # 5-P4/16
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],   # 6
+   [-1, 1, AConv, [256]],               # 7-P5/32
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],  # 8
+  ]
+
+head:
+  [
+   # SPPELAN multi-scale pooling (unchanged from gelan-s)
+   [-1, 1, SPPELAN, [256, 128]],                          # 9
+
+   # S4NDNeck global sequential context on top of SPPELAN
+   [-1, 1, S4NDNeck, [256, 20, 128, 64, 1]],              # 10  c2=256, img_size=20, d_model=128, d_state=64, n_layers=1
+
+   # up-concat merge
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],            # 11
+   [[-1, 6], 1, Concat, [1]],                             # 12 cat backbone P4
+
+   # elan-2 block
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],              # 13 (P4 features)
+
+   # up-concat merge
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],            # 14
+   [[-1, 4], 1, Concat, [1]],                             # 15 cat backbone P3
+
+   # elan-2 block
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],              # 16 (P3/8-small)
+
+   # avg-conv-down merge
+   [-1, 1, AConv, [96]],                                  # 17
+   [[-1, 13], 1, Concat, [1]],                            # 18 cat head P4
+
+   # elan-2 block
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],              # 19 (P4/16-medium)
+
+   # avg-conv-down merge
+   [-1, 1, AConv, [128]],                                 # 20
+   [[-1, 10], 1, Concat, [1]],                            # 21 cat head P5 (S4NDNeck output)
+
+   # elan-2 block
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],             # 22 (P5/32-large)
+
+   # detect
+   [[16, 19, 22], 1, DDetect, [nc]],                      # DDetect(P3, P4, P5)
+  ]

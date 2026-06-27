@@ -1,0 +1,96 @@
+# YOLOv9 GELAN-S with S4NDNeckConcatPEDSS.
+# ============================================================================
+# Same architecture as gelan-s-ssm-concat-s4nd-pe.yaml, but the per-axis SSM
+# kernel is a Diagonal SSM (DSS / S4D) instead of DPLR-HiPPO-Legendre.
+#
+# Why: DPLR forces every 1D kernel to be a sum of decaying complex exponentials
+# (eigenvalues of A have negative real part). The 2D kernel K_2D = K_h ⊗ K_w
+# then collapses to ~0 wherever either 1D kernel has decayed to ~0 — distant
+# spatial positions get suppressed even when the orthogonal-axis response is
+# strong. Diagonal SSMs admit oscillatory (non-decaying) eigenmodes; combined
+# with a frequency bandlimit (Section 4.2 of the S4ND paper) the result is a
+# smooth bandlimited 2D kernel that covers the full spatial extent.
+#
+# To revert to DPLR: use gelan-s-ssm-concat-s4nd-pe.yaml.
+# ============================================================================
+
+# parameters
+nc: 80
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# anchors
+anchors: 3
+
+# gelan backbone (unchanged)
+backbone:
+  [
+   [-1, 1, Conv, [32, 3, 2]],
+   [-1, 1, Conv, [64, 3, 2]],
+   [-1, 1, ELAN1, [64, 64, 32]],
+   [-1, 1, AConv, [128]],
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],    # 4
+   [-1, 1, AConv, [192]],
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],    # 6
+   [-1, 1, AConv, [256]],
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],   # 8
+  ]
+
+head:
+  [
+   # SPPELAN (unchanged)
+   [-1, 1, SPPELAN, [256, 128]],                                    # 9
+
+   # FPN top-down (unchanged)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],                     # 10
+   [[-1, 6], 1, Concat, [1]],                                      # 11
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                       # 12 FPN P4 (192ch, 40x40)
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],                     # 13
+   [[-1, 4], 1, Concat, [1]],                                      # 14
+   [-1, 1, RepNCSPELAN4, [128, 128, 64, 3]],                       # 15 FPN P3 (128ch, 80x80)
+
+   # PAN bottom-up (unchanged)
+   [-1, 1, AConv, [96]],                                           # 16
+   [[-1, 12], 1, Concat, [1]],                                     # 17
+   [-1, 1, RepNCSPELAN4, [192, 192, 96, 3]],                       # 18 PAN P4 (192ch, 40x40)
+   [-1, 1, AConv, [128]],                                          # 19
+   [[-1, 9], 1, Concat, [1]],                                      # 20
+   [-1, 1, RepNCSPELAN4, [256, 256, 128, 3]],                      # 21 PAN P5 (256ch, 20x20)
+
+   # ------------------------------------------------------------------------
+   # S4NDNeckConcatPEDSS: PE + DSS kernel, applied at each FPN/PAN scale.
+   # Positional args (after the auto-injected c1 from the source layer):
+   #
+   #   c2            : output channels of the neck module (kept = c1 here, so
+   #                   the spatial shape is preserved end-to-end).
+   #   img_size      : H = W of the feature map (P3=80, P4=40, P5=20 at 640px).
+   #                   Used to size the learnable 2D positional embedding and
+   #                   to set l_max for the SSM kernel along each axis.
+   #   d_model       : internal SSM hidden dimension. Larger -> more SSM copies
+   #                   to mix, more capacity.
+   #   d_state       : per-axis state size N (one diagonal A per axis is N x N).
+   #                   Half is materialized via conjugate symmetry.
+   #   n_layers      : number of stacked S4ND blocks inside the neck. Each
+   #                   block is pre-norm residual; bidirectional doubles the
+   #                   SSM channel count.
+   #   bidirectional : True -> forward + reversed SSM per axis, summed before
+   #                   the outer product (S4ND paper default).
+   #   bandlimit     : frequency-mask cutoff α from Section 4.2 of the S4ND
+   #                   paper. For each diagonal mode n, the kernel coefficient
+   #                   C_n is zeroed when  |a_n · ∆| > α / 2  (a_n is mostly
+   #                   the imaginary part = oscillation frequency, ∆ is the
+   #                   discretization step). Smaller α -> smoother kernels,
+   #                   less aliasing risk, less expressive. Larger α -> more
+   #                   modes kept, more aliasing risk on short sequences.
+   #                   Paper sweep:        {0.05, 0.10, 0.20, 0.50, None=∞}
+   #                   Paper picks at low resolutions:  α = 0.10
+   #                   Paper picks at mid resolutions:  α = 0.20
+   #                   Default here (short P3/P4/P5 maps):  α = 0.10
+   # ------------------------------------------------------------------------
+   [15, 1, S4NDNeckConcatPEDSS, [128, 80, 128, 64, 1, True, 0.1]], # 22 P3 (128ch, 80x80)
+   [18, 1, S4NDNeckConcatPEDSS, [192, 40, 128, 64, 1, True, 0.1]], # 23 P4 (192ch, 40x40)
+   [21, 1, S4NDNeckConcatPEDSS, [256, 20, 128, 64, 1, True, 0.1]], # 24 P5 (256ch, 20x20)
+
+   # detect
+   [[22, 23, 24], 1, DDetect, [nc]],                               # 25
+  ]

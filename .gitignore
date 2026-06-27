@@ -1,0 +1,63 @@
+# Ignore only the contents of large data folders
+data/annotations/*
+data/images/*
+data/labels/*
+data/LICENSE
+data/coco/*
+*.tar.gz
+
+#ignore wandb yolo logs
+models/yolov9/wandb/*
+
+# Checkpoints (any depth)
+ckpts/
+**/ckpts/
+checkpoints/
+**/checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Video files
+*.mp4
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.env
+.venv/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Python wheels
+*.whl
+
+# training outputs
+models/yolov9/train/
+
+# tensorboard
+events.out.tfevents.*
+
+# generated visuals/results
+results.csv
+labels.jpg
+labels_correlogram.jpg
+
+# training option snapshots
+opt.yaml
+hyp.yaml
+
+
+# CIFAR data ignored anywhere in repo at any depth
+cifar-10-batches-py/
+**/cifar-10-batches-py/
